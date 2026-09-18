@@ -1,0 +1,197 @@
+name: Promote to prod
+
+# Dispatched against the semver tag being promoted:
+#   gh workflow run promote.yml --ref v1.4.2
+#
+# The ref matters: environment deployment tag policies are matched against
+# GITHUB_REF. Dispatching from `main` yields refs/heads/main and is blocked by
+# the `v*` tag policy on the prod environment. That is intentional.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-prod
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve image from preprod build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      digest: ${{ steps.resolve.outputs.digest }}
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - name: Find the preprod build for this commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # There is deliberately no build step in this workflow. Prod can only
+          # ship an artifact preprod already built, resolved by commit — the
+          # fake-image equivalent of looking up an existing digest in ACR.
+          RUN_ID=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
+
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::No successful preprod build found for ${GITHUB_SHA}."
+            echo "::error::Only commits that shipped to preprod can be promoted."
+            exit 1
+          fi
+
+          gh run download "$RUN_ID" -n image-manifest
+          cat image.json
+
+          DIGEST=$(jq -r .digest image.json)
+          IMAGE=$(jq -r .image image.json)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE"   >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Resolved artifact"
+            echo
+            echo "Built by CI run [\`${RUN_ID}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}) — not rebuilt here."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Version | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
+            echo "| Image | \`${IMAGE}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  diff:
+    name: Promotion diff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: What is shipping
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # `prod` points at whatever is currently live (moved by the label job
+          # after a successful deploy). Fall back to the deployments API if the
+          # tag does not exist yet.
+          BASE=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/prod" --jq '.object.sha' 2>/dev/null || true)
+          if [ -z "${BASE:-}" ]; then
+            BASE=$(gh api "repos/${GITHUB_REPOSITORY}/deployments?environment=prod&per_page=1" \
+              --jq '.[0].sha // empty' 2>/dev/null || true)
+          fi
+
+          if [ -z "${BASE:-}" ]; then
+            {
+              echo "## Promotion diff"
+              echo
+              echo "First deployment to prod — nothing to compare against."
+              echo
+              echo "Shipping \`${GITHUB_REF_NAME}\` at \`${GITHUB_SHA:0:7}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$BASE" = "$GITHUB_SHA" ]; then
+            {
+              echo "## Promotion diff"
+              echo
+              echo "\`${GITHUB_REF_NAME}\` is already live. This is a redeploy of the same commit."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE}...${GITHUB_SHA}" > compare.json
+
+          AHEAD=$(jq -r '.ahead_by' compare.json)
+          BEHIND=$(jq -r '.behind_by' compare.json)
+          NFILES=$(jq -r '.files | length' compare.json)
+
+          {
+            echo "## Promotion diff"
+            echo
+            echo "Promoting **\`${GITHUB_REF_NAME}\`** — \`${BASE:0:7}\` (live) → \`${GITHUB_SHA:0:7}\`"
+            echo
+            echo "**${AHEAD} commit(s) ahead**, ${BEHIND} behind, ${NFILES} file(s) changed."
+            if [ "$BEHIND" -gt 0 ]; then
+              echo
+              echo "> **This is a rollback or a divergence.** The candidate is missing ${BEHIND} commit(s) that are live now."
+            fi
+            echo
+            echo "[Full diff on GitHub](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${BASE}...${GITHUB_SHA})"
+            echo
+            echo "### Commits"
+            echo
+            jq -r '.commits[] | "- `\(.sha[0:7])` \(.commit.message | split("\n")[0]) — _\(.commit.author.name)_"' compare.json
+            echo
+            echo "### Files changed"
+            echo
+            echo '| Status | File | +/- |'
+            echo '|---|---|---|'
+            jq -r '.files[] | "| \(.status) | `\(.filename)` | +\(.additions) / -\(.deletions) |"' compare.json
+            echo
+            echo "_The compare API returns at most 250 commits and 300 files; long promotions are truncated._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to prod
+    needs: [resolve, diff]
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - name: Simulate prod deploy
+        run: |
+          set -euo pipefail
+          echo "would deploy: ${{ needs.resolve.outputs.image }}@${{ needs.resolve.outputs.digest }}"
+          echo "to:           Azure Web App (prod)"
+
+          {
+            echo "### Deployed to prod"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Version | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
+            echo "| Digest | \`${{ needs.resolve.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  label:
+    name: Move prod tag
+    needs: deploy
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Point `prod` at the deployed commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # `prod` is an OUTPUT of a successful deploy, never a human-pushed
+          # trigger. Nothing keys off it, so moving it cannot cause a recursive run.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/prod" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/prod" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            echo "moved prod -> ${GITHUB_SHA:0:7}"
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref=refs/tags/prod -f sha="$GITHUB_SHA" >/dev/null
+            echo "created prod -> ${GITHUB_SHA:0:7}"
+          fi
+
+          {
+            echo
+            echo "\`prod\` now points at \`${GITHUB_SHA:0:7}\` (\`${GITHUB_REF_NAME}\`)."
+            echo
+            echo "_Local clones need \`git fetch --tags --force\` to see this._"
+          } >> "$GITHUB_STEP_SUMMARY"

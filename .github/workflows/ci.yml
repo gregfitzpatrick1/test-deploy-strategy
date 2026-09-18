@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build image (simulated)
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Simulate docker build and push
+        id: build
+        run: |
+          set -euo pipefail
+          # Stand-in for the digest the registry returns after `docker push`.
+          # In the real pipeline this is `docker buildx build --push` output.
+          DIGEST="sha256:$(printf '%s' "$GITHUB_SHA" | sha256sum | cut -d' ' -f1)"
+          IMAGE="acr.example.io/${GITHUB_REPOSITORY##*/}"
+
+          echo "would build:  docker build -t ${IMAGE}:${GITHUB_SHA} ."
+          echo "would push:   docker push ${IMAGE}:${GITHUB_SHA}"
+          echo "digest:       ${DIGEST}"
+
+          jq -n \
+            --arg sha "$GITHUB_SHA" \
+            --arg digest "$DIGEST" \
+            --arg image "$IMAGE" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg built_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{sha:$sha, digest:$digest, image:$image, run_id:$run_id, built_at:$built_at}' \
+            > image.json
+
+          cat image.json
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE"   >> "$GITHUB_OUTPUT"
+
+      - name: Upload image manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-manifest
+          path: image.json
+          retention-days: 90
+          if-no-files-found: error
+
+  deploy-preprod:
+    name: Deploy to preprod
+    needs: build
+    runs-on: ubuntu-latest
+    environment: preprod
+    steps:
+      - name: Simulate preprod deploy
+        run: |
+          set -euo pipefail
+          echo "would deploy: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}"
+          echo "to:           Azure Web App (preprod)"
+
+          {
+            echo "### Deployed to preprod"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
+            echo "| Image | \`${{ needs.build.outputs.image }}\` |"
+            echo "| Digest | \`${{ needs.build.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
