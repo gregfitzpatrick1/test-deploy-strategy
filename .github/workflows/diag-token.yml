@@ -1,0 +1,37 @@
+name: Diagnose token perms
+
+# Throwaway. Determines whether a GITHUB_TOKEN with an explicit
+# `contents: write` grant can create a git ref when the run is on a TAG ref
+# versus a BRANCH ref, given the repo default of read-only workflow permissions.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Try to create and delete a throwaway ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "ref_type=${GITHUB_REF_TYPE}"
+          echo
+
+          NAME="diag-$(date +%s)"
+          echo "--- POST /git/refs (refs/tags/$NAME) ---"
+          if gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+               -f ref="refs/tags/$NAME" -f sha="$GITHUB_SHA"; then
+            echo "RESULT: CREATE OK"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/$NAME" >/dev/null \
+              && echo "cleaned up"
+          else
+            echo "RESULT: CREATE FAILED (exit $?)"
+          fi
