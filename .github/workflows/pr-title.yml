@@ -1,0 +1,35 @@
+name: PR title
+
+# Merges to main are squash-only and the squash commit message is the PR
+# TITLE (squash_merge_commit_title: PR_TITLE). The husky commit-msg hook only
+# lints commits made locally, so without this check a PR titled "update stuff"
+# squashes into a non-conventional commit on main, and semantic-release
+# silently declines to cut a release.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Conventional commit title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --legacy-peer-deps
+
+      - name: Lint PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          echo "$PR_TITLE" | npx commitlint --verbose

@@ -60,6 +60,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: preprod
+    permissions:
+      contents: read
     steps:
       - name: Simulate preprod deploy
         run: |
@@ -75,4 +77,39 @@ jobs:
             echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
             echo "| Image | \`${{ needs.build.outputs.image }}\` |"
             echo "| Digest | \`${{ needs.build.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  label-preprod:
+    name: Move preprod tag
+    needs: deploy-preprod
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Point `preprod` at the deployed commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Mirror of the `prod` label in promote.yml: `preprod` is an OUTPUT of
+          # a successful deploy, never a trigger. Nothing keys off it, so moving
+          # it cannot cause a recursive run.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/preprod" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/preprod" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            echo "moved preprod -> ${GITHUB_SHA:0:7}"
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref=refs/tags/preprod -f sha="$GITHUB_SHA" >/dev/null
+            echo "created preprod -> ${GITHUB_SHA:0:7}"
+          fi
+
+          {
+            echo
+            echo "\`preprod\` now points at \`${GITHUB_SHA:0:7}\`."
+            echo
+            echo "_Local clones need \`git fetch --tags --force\` to see this._"
           } >> "$GITHUB_STEP_SUMMARY"
