@@ -31,6 +31,9 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # These jobs do not check out the repo, so `gh` cannot infer it from
+          # a git remote (`gh run download` shells out to git and fails).
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -77,6 +80,9 @@ jobs:
       - name: What is shipping
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # These jobs do not check out the repo, so `gh` cannot infer it from
+          # a git remote (`gh run download` shells out to git and fails).
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -185,6 +191,9 @@ jobs:
       - name: Point `prod` at the deployed commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # These jobs do not check out the repo, so `gh` cannot infer it from
+          # a git remote (`gh run download` shells out to git and fails).
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
