@@ -5,6 +5,11 @@ name: Diagnose token perms
 # versus a BRANCH ref, given the repo default of read-only workflow permissions.
 on:
   workflow_dispatch:
+    inputs:
+      ref_name:
+        description: Tag name to attempt
+        required: true
+        default: probe-throwaway
 
 permissions:
   contents: read
@@ -25,7 +30,7 @@ jobs:
           echo "ref_type=${GITHUB_REF_TYPE}"
           echo
 
-          NAME="diag-$(date +%s)"
+          NAME="${{ inputs.ref_name }}"
           echo "--- POST /git/refs (refs/tags/$NAME) ---"
           if gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
                -f ref="refs/tags/$NAME" -f sha="$GITHUB_SHA"; then
