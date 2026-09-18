@@ -31,7 +31,11 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # --legacy-peer-deps: @conventional-changelog/git-client declares an
+        # OPTIONAL peer conventional-commits-filter@^6.0.1, while the
+        # semantic-release plugins pin ^5.0.0. npm install hoists 5.0.0 and
+        # plain `npm ci` then rejects the tree against the optional peer range.
+        run: npm ci --legacy-peer-deps
 
       - name: Release
         env:
