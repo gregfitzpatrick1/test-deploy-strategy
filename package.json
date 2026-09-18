@@ -1,6 +1,6 @@
 {
   "name": "test-deploy-strategy",
-  "version": "0.0.0-semantically-released",
+  "version": "1.0.0",
   "description": "Testing a single-branch + tag promotion model with a real approval gate",
   "scripts": {
     "test": "echo \"No tests yet\"",
