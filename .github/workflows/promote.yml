@@ -91,19 +91,19 @@ jobs:
           # Gate on the exit status and validate the shape.
           is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
 
-          # `prod` points at whatever is currently live (moved by the label job
-          # after a successful deploy). Fall back to the deployments API if the
-          # tag does not exist yet.
+          # `prod` is the single source of truth for what is live: the label
+          # job moves it only after a deploy SUCCEEDS.
+          #
+          # Deliberately NOT falling back to the deployments API. A deployment
+          # record is created in state `waiting` the moment a job reaches the
+          # gate, so `deployments?environment=prod` returns commits that were
+          # never deployed — including the one being proposed right now. With
+          # no `prod` tag we report a first deployment, which is safe; showing
+          # a wrong base silently would not be.
           BASE=""
           if RAW=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/prod" --jq '.object.sha' 2>/dev/null) \
              && is_sha "$RAW"; then
             BASE="$RAW"
-          fi
-          if [ -z "$BASE" ]; then
-            if RAW=$(gh api "repos/${GITHUB_REPOSITORY}/deployments?environment=prod&per_page=1" \
-                 --jq '.[0].sha // empty' 2>/dev/null) && is_sha "$RAW"; then
-              BASE="$RAW"
-            fi
           fi
 
           if [ -z "$BASE" ]; then
